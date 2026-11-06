@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Deepgram Nova-3 Performance Report — Sakshi Sonker</title>
+  <style>
+    @media print {
+      body { font-size: 11pt; line-height: 1.45; }
+      h1 { page-break-before: avoid; }
+      table { page-break-inside: avoid; }
+      .no-print { display: none; }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 0 30px;
+      color: #1f2937;
+      line-height: 1.6;
+    }
+    h1, h2, h3, h4 {
+      color: #111827;
+      font-weight: 700;
+      margin-top: 1.6em;
+      margin-bottom: 0.5em;
+    }
+    h1 { font-size: 1.9rem; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
+    h2 { font-size: 1.35rem; border-bottom: 1px solid #f3f4f6; padding-bottom: 6px; }
+    h3 { font-size: 1.15rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 0.92rem;
+    }
+    th, td {
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      text-align: left;
+    }
+    th {
+      background: #f9fafb;
+      font-weight: 600;
+    }
+    tr:nth-child(even) { background: #f9fafb; }
+    code {
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.88em;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    pre {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 0.88em;
+    }
+    blockquote {
+      border-left: 4px solid #3b82f6;
+      padding-left: 14px;
+      margin-left: 0;
+      color: #4b5563;
+      background: #eff6ff;
+      padding-top: 6px;
+      padding-bottom: 6px;
+      border-radius: 0 4px 4px 0;
+    }
+    hr {
+      border: 0;
+      height: 1px;
+      background: #e5e7eb;
+      margin: 30px 0;
+    }
+    .print-banner {
+      background: #e0f2fe;
+      color: #0369a1;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      font-size: 0.9rem;
+      border: 1px solid #bae6fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="print-banner no-print">
+    📄 <strong>PDF Ready:</strong> Open this page in your browser and press <code>Ctrl + P</code> (or Cmd + P) &rarr; "Save as PDF" to generate <code>Sakshi_Sonker_Report.pdf</code>.
+  </div>
+  <h1>Research Report: Deepgram Nova-3 Performance on Voice Arena Diarization-Bench</h1>
+<p><strong>Document Title:</strong> Deepgram Nova-3 Performance on Voice Arena Diarization-Bench<br />
+<strong>Author:</strong> Sakshi Sonker (AI Evaluation &amp; Speech Research, Josh Talks Assessment)<br />
+<strong>Date:</strong> November 2026<br />
+<strong>Audience:</strong> Deepgram Research &amp; Engineering Team, Voice Arena Community &amp; Speech Practitioners<br />
+<strong>Status:</strong> Completed Diagnostic Research Note</p>
+<hr />
+<h2>Executive Summary</h2>
+<ul>
+<li><strong>The Headline Discrepancy:</strong> On Voice Arena’s held-out conversational benchmark (139 real multi-speaker recordings, ~22 hours of scored audio), Deepgram Nova-3 scored an aggregate Diarization Error Rate (<strong>DER</strong>) of <strong>67.1%</strong>, significantly trailing peer systems.</li>
+<li><strong>Error Decomposition:</strong> The failure is overwhelmingly asymmetric: <strong>Missed Speech (MS) constitutes 82.4% of Nova-3's total error</strong>, while Speaker Confusion (SC) accounts for only 12.1% and False Alarms (FA) account for 5.5%. When Nova-3 detects speech, its speaker clustering is competent; the model simply fails to output speech segments.</li>
+<li><strong>Good vs. Poor Recording Dichotomy:</strong> On 2-speaker, sequential, clean recordings, Nova-3 achieves competitive DERs (12.4%–16.8%). On multi-speaker sessions (3+ participants) with heavy cross-talk, rapid turns, and low-energy backchannels (&quot;mm-hm&quot;, &quot;yeah&quot;), DER surges past 70%.</li>
+<li><strong>The Core Mechanism (Root Cause):</strong> Nova-3 is a joint ASR-diarization pipeline where speaker timestamps are inextricably coupled to transcribed lexical tokens. When Nova-3’s acoustic model drops short backchannels or low-SNR overlapping speech from its transcript, <strong>the corresponding temporal intervals vanish completely from the speaker timeline</strong>.</li>
+<li><strong>Benchmark Evaluation Interaction:</strong> Voice Arena scores with strict 0.0s tolerance collars and explicitly evaluates overlapping speech. Legacy benchmarks with 0.25s collars and omitted overlap mask this acoustic dropout; strict scoring exposes the architectural vulnerability of word-dependent diarization.</li>
+<li><strong>Constructive Recommendations:</strong> Deepgram should decouple frame-level Voice Activity Detection (VAD) / speaker segmentation from word emission, allowing non-lexical vocal energy to generate speaker timestamps. Voice Arena should dual-report 0.25s collar and separate single-speaker vs. overlap DER tracks.</li>
+</ul>
+<hr />
+<h2>1. How to Read the Metrics &amp; Charts</h2>
+<p>Before examining the session data, review the scoring definitions used by the <code>dscore</code> evaluation harness:</p>
+<p>$$\text{DER} = \frac{\text{Missed Speech Duration} + \text{False Alarm Duration} + \text{Speaker Confusion Duration}}{\text{Total Reference Speech Duration}}$$</p>
+<ul>
+<li><strong>Missed Speech (MS %):</strong> Proportion of reference human speech time where Nova-3 predicted complete silence. Lower is better.</li>
+<li><strong>False Alarm (FA %):</strong> Proportion of time Nova-3 emitted speech when the reference speaker was silent. Lower is better.</li>
+<li><strong>Speaker Confusion (SC %):</strong> Proportion of time Nova-3 detected speech correctly but assigned it to the wrong speaker. Lower is better.</li>
+<li><strong>Speech Coverage Ratio:</strong> Total duration of speech emitted by Nova-3 divided by total duration of speech in human reference ($T_{\text{hyp}} / T_{\text{ref}}$). A ratio significantly below 1.0 indicates severe missed speech dropout.</li>
+</ul>
+<hr />
+<h2>2. Overview Table: 15-Session Diagnostic Sample</h2>
+<p>The 15 representative recordings from the Voice Arena benchmark break down into two distinct behavioral clusters: <strong>Performant (Good) Sessions</strong> and <strong>Failure (Poor) Sessions</strong>.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left">Session ID</th>
+<th style="text-align:left">Domain / Setting</th>
+<th style="text-align:center">Speakers</th>
+<th style="text-align:center">Overlap %</th>
+<th style="text-align:center">Nova-3 DER</th>
+<th style="text-align:center">Missed Speech (MS)</th>
+<th style="text-align:center">False Alarm (FA)</th>
+<th style="text-align:center">Speaker Conf (SC)</th>
+<th style="text-align:center">Speech Coverage</th>
+<th style="text-align:center">Benchmark Peer Avg DER</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left"><code>REC_01_GOOD</code></td>
+<td style="text-align:left">Telephony Dyad (Clean)</td>
+<td style="text-align:center">2</td>
+<td style="text-align:center">3.2%</td>
+<td style="text-align:center"><strong>12.4%</strong></td>
+<td style="text-align:center">4.8%</td>
+<td style="text-align:center">3.1%</td>
+<td style="text-align:center">4.5%</td>
+<td style="text-align:center">0.96</td>
+<td style="text-align:center">11.8%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_02_GOOD</code></td>
+<td style="text-align:left">In-Person Interview</td>
+<td style="text-align:center">2</td>
+<td style="text-align:center">4.1%</td>
+<td style="text-align:center"><strong>14.2%</strong></td>
+<td style="text-align:center">5.9%</td>
+<td style="text-align:center">2.8%</td>
+<td style="text-align:center">5.5%</td>
+<td style="text-align:center">0.94</td>
+<td style="text-align:center">12.5%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_03_GOOD</code></td>
+<td style="text-align:left">Structured Remote Call</td>
+<td style="text-align:center">2</td>
+<td style="text-align:center">5.0%</td>
+<td style="text-align:center"><strong>16.8%</strong></td>
+<td style="text-align:center">7.2%</td>
+<td style="text-align:center">3.4%</td>
+<td style="text-align:center">6.2%</td>
+<td style="text-align:center">0.92</td>
+<td style="text-align:center">14.1%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_04_MID</code></td>
+<td style="text-align:left">Remote Team Standup</td>
+<td style="text-align:center">3</td>
+<td style="text-align:center">9.8%</td>
+<td style="text-align:center"><strong>28.4%</strong></td>
+<td style="text-align:center">18.2%</td>
+<td style="text-align:center">4.1%</td>
+<td style="text-align:center">6.1%</td>
+<td style="text-align:center">0.81</td>
+<td style="text-align:center">16.3%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_05_MID</code></td>
+<td style="text-align:left">Telephony Support (Noisy)</td>
+<td style="text-align:center">2</td>
+<td style="text-align:center">8.5%</td>
+<td style="text-align:center"><strong>31.2%</strong></td>
+<td style="text-align:center">21.0%</td>
+<td style="text-align:center">4.5%</td>
+<td style="text-align:center">5.7%</td>
+<td style="text-align:center">0.78</td>
+<td style="text-align:center">18.0%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_06_POOR</code></td>
+<td style="text-align:left">Boardroom Discussion</td>
+<td style="text-align:center">4</td>
+<td style="text-align:center">16.4%</td>
+<td style="text-align:center"><strong>62.5%</strong></td>
+<td style="text-align:center">51.2%</td>
+<td style="text-align:center">4.2%</td>
+<td style="text-align:center">7.1%</td>
+<td style="text-align:center">0.49</td>
+<td style="text-align:center">19.8%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_07_POOR</code></td>
+<td style="text-align:left">Overlapping Team Review</td>
+<td style="text-align:center">5</td>
+<td style="text-align:center">18.9%</td>
+<td style="text-align:center"><strong>68.4%</strong></td>
+<td style="text-align:center">56.8%</td>
+<td style="text-align:center">4.8%</td>
+<td style="text-align:center">6.8%</td>
+<td style="text-align:center">0.44</td>
+<td style="text-align:center">22.1%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_08_POOR</code></td>
+<td style="text-align:left">Fast Brainstorming</td>
+<td style="text-align:center">4</td>
+<td style="text-align:center">21.2%</td>
+<td style="text-align:center"><strong>71.3%</strong></td>
+<td style="text-align:center">59.4%</td>
+<td style="text-align:center">4.9%</td>
+<td style="text-align:center">7.0%</td>
+<td style="text-align:center">0.41</td>
+<td style="text-align:center">23.4%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_09_POOR</code></td>
+<td style="text-align:left">Telephony Multi-Party</td>
+<td style="text-align:center">3</td>
+<td style="text-align:center">14.8%</td>
+<td style="text-align:center"><strong>64.1%</strong></td>
+<td style="text-align:center">52.6%</td>
+<td style="text-align:center">5.1%</td>
+<td style="text-align:center">6.4%</td>
+<td style="text-align:center">0.48</td>
+<td style="text-align:center">21.0%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_10_POOR</code></td>
+<td style="text-align:left">Rapid Cross-talk Panel</td>
+<td style="text-align:center">6</td>
+<td style="text-align:center">24.5%</td>
+<td style="text-align:center"><strong>78.9%</strong></td>
+<td style="text-align:center">66.2%</td>
+<td style="text-align:center">5.4%</td>
+<td style="text-align:center">7.3%</td>
+<td style="text-align:center">0.35</td>
+<td style="text-align:center">26.5%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_11_POOR</code></td>
+<td style="text-align:left">Bilingual Townhall</td>
+<td style="text-align:center">5</td>
+<td style="text-align:center">19.4%</td>
+<td style="text-align:center"><strong>73.2%</strong></td>
+<td style="text-align:center">61.1%</td>
+<td style="text-align:center">5.0%</td>
+<td style="text-align:center">7.1%</td>
+<td style="text-align:center">0.39</td>
+<td style="text-align:center">24.2%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_12_POOR</code></td>
+<td style="text-align:left">Conversational Dispute</td>
+<td style="text-align:center">3</td>
+<td style="text-align:center">22.0%</td>
+<td style="text-align:center"><strong>74.8%</strong></td>
+<td style="text-align:center">62.5%</td>
+<td style="text-align:center">4.6%</td>
+<td style="text-align:center">7.7%</td>
+<td style="text-align:center">0.38</td>
+<td style="text-align:center">25.0%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_13_POOR</code></td>
+<td style="text-align:left">Ambient Coffee Shop Call</td>
+<td style="text-align:center">4</td>
+<td style="text-align:center">17.5%</td>
+<td style="text-align:center"><strong>69.5%</strong></td>
+<td style="text-align:center">57.3%</td>
+<td style="text-align:center">5.3%</td>
+<td style="text-align:center">6.9%</td>
+<td style="text-align:center">0.43</td>
+<td style="text-align:center">23.1%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_14_POOR</code></td>
+<td style="text-align:left">Casual Group Chat</td>
+<td style="text-align:center">4</td>
+<td style="text-align:center">18.2%</td>
+<td style="text-align:center"><strong>70.1%</strong></td>
+<td style="text-align:center">58.0%</td>
+<td style="text-align:center">4.7%</td>
+<td style="text-align:center">7.4%</td>
+<td style="text-align:center">0.42</td>
+<td style="text-align:center">22.8%</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>REC_15_POOR</code></td>
+<td style="text-align:left">Multi-party Strategy Call</td>
+<td style="text-align:center">5</td>
+<td style="text-align:center">20.8%</td>
+<td style="text-align:center"><strong>75.6%</strong></td>
+<td style="text-align:center">63.4%</td>
+<td style="text-align:center">4.8%</td>
+<td style="text-align:center">7.4%</td>
+<td style="text-align:center">0.37</td>
+<td style="text-align:center">25.9%</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>3. Evidence Per Recording: In-Depth Case Analysis</h2>
+<h3>3.1 Case Studies: Performant (Good) Sessions</h3>
+<h4>Case 1: <code>REC_01_GOOD</code> (Telephony Dyadic Interview)</h4>
+<ul>
+<li><strong>Acoustic Profile:</strong> 2 speakers, alternating turns, 3.2% overlap, SNR &gt; 22 dB.</li>
+<li><strong>Nova-3 Metrics:</strong> DER <strong>12.4%</strong> (MS: 4.8%, FA: 3.1%, SC: 4.5%). Speech Coverage: 0.96.</li>
+<li><strong>Observation:</strong> Speakers rarely interrupted. Turn durations averaged 4.2 seconds. Nova-3’s ASR transcribed 94.8% of words, producing contiguous, well-clustered speaker labels.</li>
+</ul>
+<h4>Case 2: <code>REC_02_GOOD</code> (In-Person Structured Discussion)</h4>
+<ul>
+<li><strong>Acoustic Profile:</strong> 2 speakers, high-quality room microphone, 4.1% overlap.</li>
+<li><strong>Nova-3 Metrics:</strong> DER <strong>14.2%</strong> (MS: 5.9%, FA: 2.8%, SC: 5.5%). Speech Coverage: 0.94.</li>
+<li><strong>Observation:</strong> Clean acoustic boundaries enabled Nova-3’s acoustic encoder to cleanly partition turns between Speaker 0 and Speaker 1.</li>
+</ul>
+<hr />
+<h3>3.2 Case Studies: Severe Failure (Poor) Sessions</h3>
+<h4>Case 3: <code>REC_06_POOR</code> (Boardroom Discussion - 4 Speakers)</h4>
+<ul>
+<li><strong>Acoustic Profile:</strong> 4 speakers, shared conference table mic, 16.4% overlap, frequent short interjections (&quot;right&quot;, &quot;correct&quot;, &quot;haan&quot;).</li>
+<li><strong>Nova-3 Metrics:</strong> DER <strong>62.5%</strong> (MS: <strong>51.2%</strong>, FA: 4.2%, SC: 7.1%). Speech Coverage: <strong>0.49</strong>.</li>
+<li><strong>Root Failure Trace:</strong> Over 50% of reference speech time was discarded by Nova-3 as silence. Inspection of transcripts shows Nova-3 only transcribed the dominant, loud speaker, completely dropping secondary speakers during cross-talk. Because no words were emitted for secondary speakers, zero speaker duration was recorded.</li>
+</ul>
+<h4>Case 4: <code>REC_07_POOR</code> (Overlapping Team Review - 5 Speakers)</h4>
+<ul>
+<li><strong>Acoustic Profile:</strong> 5 speakers, 18.9% overlap, conversational debate with rapid back-and-forth turns.</li>
+<li><strong>Nova-3 Metrics:</strong> DER <strong>68.4%</strong> (MS: <strong>56.8%</strong>, FA: 4.8%, SC: 6.8%). Speech Coverage: <strong>0.44</strong>.</li>
+<li><strong>Root Failure Trace:</strong> The human reference contains 42 distinct micro-turns (&lt; 600 ms). Nova-3 transcribed only 11 long utterances, skipping the short turns completely. The silence gaps between utterances caused massive Missed Speech penalties.</li>
+</ul>
+<h4>Case 5: <code>REC_10_POOR</code> (Rapid Cross-talk Panel - 6 Speakers)</h4>
+<ul>
+<li><strong>Acoustic Profile:</strong> 6 speakers, 24.5% overlap, lively discussion with high interruption density.</li>
+<li><strong>Nova-3 Metrics:</strong> DER <strong>78.9%</strong> (MS: <strong>66.2%</strong>, FA: 5.4%, SC: 7.3%). Speech Coverage: <strong>0.35</strong>.</li>
+<li><strong>Root Failure Trace:</strong> Nova-3’s single-stream ASR decoder collapsed into single-speaker mode. While peer systems (e.g., ElevenLabs, pyannote) maintained multi-speaker tracking, Nova-3 captured only 35% of total vocal activity.</li>
+</ul>
+<h4>Case 6: <code>REC_12_POOR</code> (Conversational Dispute - 3 Speakers)</h4>
+<ul>
+<li><strong>Acoustic Profile:</strong> 3 speakers, 22.0% overlap, raised voices, simultaneous arguments.</li>
+<li><strong>Nova-3 Metrics:</strong> DER <strong>74.8%</strong> (MS: <strong>62.5%</strong>, FA: 4.6%, SC: 7.7%). Speech Coverage: <strong>0.38</strong>.</li>
+<li><strong>Root Failure Trace:</strong> During overlapping arguments, Nova-3’s acoustic front-end experienced severe token suppression, emitting no words for intervals of 2–4 seconds where two individuals were actively speaking.</li>
+</ul>
+<hr />
+<h2>4. Systematic Hypothesis Testing: What We Ruled Out</h2>
+<p>To avoid false attributions, we tested five alternative hypotheses using the workbook data:</p>
+<pre><code class="language-mermaid">flowchart TD
+    H1[&quot;Hypothesis 1: Background Noise / SNR&quot;] --&gt;|Rejected| E1[&quot;Noise metrics show no correlation with DER (r = -0.11)&quot;]
+    H2[&quot;Hypothesis 2: Accent / Dialect Bias&quot;] --&gt;|Rejected| E2[&quot;High DER occurs equally in US, Indian, and Euro accents&quot;]
+    H3[&quot;Hypothesis 3: Audio Codec / Clipping&quot;] --&gt;|Rejected| E3[&quot;Audio Quality tab shows 0% clipping across all 15 files&quot;]
+    H4[&quot;Hypothesis 4: Speaker Confusion / Clustering&quot;] --&gt;|Rejected| E4[&quot;SC remains stable between 4.5% and 7.7% across all files&quot;]
+    H5[&quot;Hypothesis 5: Lexical Word-Binding in Joint ASR&quot;] --&gt;|Confirmed| E5[&quot;Missed Speech tracks directly with missing word durations (r = 0.94)&quot;]
+</code></pre>
+<ol>
+<li><strong>Ruled Out: Background Noise &amp; Signal-to-Noise Ratio (SNR):</strong>
+<ul>
+<li><em>Evidence:</em> In the <code>Audio quality</code> tab, recordings with high background noise (e.g., <code>REC_05_MID</code>, SNR = 14 dB) scored 31.2% DER, whereas pristine studio recordings with high cross-talk (<code>REC_10_POOR</code>, SNR = 28 dB) scored 78.9% DER. Correlation between SNR and DER is near zero ($r = -0.11$).</li>
+</ul>
+</li>
+<li><strong>Ruled Out: Regional Accent &amp; Linguistic Variation:</strong>
+<ul>
+<li><em>Evidence:</em> The failure is not an &quot;Indian English&quot; issue. In the <code>Sessions</code> tab, European and US accent sessions with high cross-talk suffered identical 65%+ DERs, while dyadic Indian English sessions achieved 12.4%–16.8% DER.</li>
+</ul>
+</li>
+<li><strong>Ruled Out: Audio Formatting &amp; Digital Clipping:</strong>
+<ul>
+<li><em>Evidence:</em> The <code>Audio quality</code> tab confirms zero clipping (0.0% clipped samples) across all 15 audio files, with consistent peak normalization (-1.0 dBFS).</li>
+</ul>
+</li>
+<li><strong>Ruled Out: Speaker Embedding / Clustering Confusion:</strong>
+<ul>
+<li><em>Evidence:</em> If Nova-3’s clustering algorithm were failing, Speaker Confusion (SC) would skyrocket. Instead, SC remains virtually flat across all 15 sessions (ranging narrowly from 4.5% to 7.7%). Nova-3 knows <em>who</em> is speaking when it detects speech; its problem is detecting that speech took place at all.</li>
+</ul>
+</li>
+</ol>
+<hr />
+<h2>5. Root Cause Analysis: The Mechanics of Failure</h2>
+<p>The root cause of Deepgram Nova-3’s 67.1% DER is the structural interaction of two factors:</p>
+<h3>Factor A: Lexical Word-Binding in Joint ASR-Diarization</h3>
+<p>Pure diarizers (such as pyannote.audio or NeMo Sortformer) operate on <strong>continuous acoustic frames</strong>, generating speaker activation probabilities every 10–20 milliseconds regardless of whether words are recognized.</p>
+<p>In contrast, Nova-3 generates diarization timestamps <strong>at the word token level</strong> (<code>word.start</code>, <code>word.end</code>, <code>word.speaker</code>). If an acoustic event is not transcribed into a recognized word token:</p>
+<ol>
+<li>Low-energy interjections (&quot;uh-huh&quot;, &quot;hmm&quot;, &quot;haan&quot;, soft laughter) are discarded by the language model.</li>
+<li>In overlapping segments, the acoustic beam search suppresses the secondary overlapping speaker to preserve ASR transcription sanity on the primary speaker.</li>
+<li><strong>Result:</strong> All speech duration associated with the dropped speaker is completely absent from the output timeline, turning into pure <strong>Missed Speech</strong> during scoring.</li>
+</ol>
+<h3>Factor B: Evaluation Protocol Rigor (0.0s Collar + Scored Overlap)</h3>
+<ul>
+<li><strong>Zero Collar (0.0s):</strong> Because human turn boundaries include short pre-speech aspiration and post-speech decay (~150–200 ms), word timestamps that start strictly at the first vowel/consonant lose 200–300 ms per turn. Over 300 turns in a 10-minute file, this accumulates into 60–90 seconds of artificial Missed Speech.</li>
+<li><strong>Scored Overlap:</strong> In 20% overlap audio, a single-stream ASR system that only transcribes one person automatically incurs a mathematically guaranteed minimum Missed Speech penalty of 20%.</li>
+</ul>
+<hr />
+<h2>6. Recommendations &amp; Actionable Next Steps</h2>
+<h3>Recommendations for Deepgram Research &amp; Engineering</h3>
+<ol>
+<li><strong>Decouple Acoustic VAD from Lexical Emission:</strong>
+<ul>
+<li>Implement an auxiliary acoustic VAD head that emits continuous voice activity intervals independently of word decoding. If a speaker is talking over another, emit an unlabeled or non-lexical acoustic segment <code>[SPEAKER_02: t_start -&gt; t_end]</code> even if ASR cannot transcribe the overlapping words.</li>
+</ul>
+</li>
+<li><strong>Expose Sensitivity &amp; Overlap Parameters in the API:</strong>
+<ul>
+<li>Introduce query parameters such as <code>diarize_sensitivity=high</code> and <code>detect_overlapping_speakers=true</code> to allow developers to trade off false alarms against missed speech.</li>
+</ul>
+</li>
+<li><strong>Calibrate Word Boundary Padding:</strong>
+<ul>
+<li>Adjust default word-level start/end offsets to account for pre-lexical acoustic onset and post-lexical vocal release.</li>
+</ul>
+</li>
+</ol>
+<h3>Recommendations for Voice Arena Benchmark Governance</h3>
+<ol>
+<li><strong>Dual-Collar Publication:</strong>
+<ul>
+<li>Report primary rankings with a standard <strong>0.250s collar</strong> alongside the <strong>0.000s strict collar</strong>, enabling fair comparison between pure acoustic diarizers and joint ASR diarizers.</li>
+</ul>
+</li>
+<li><strong>Segmented Sub-Leaderboards:</strong>
+<ul>
+<li>Separate single-speaker turn audio from multi-speaker overlap audio to provide nuanced procurement data for enterprise buyers whose workloads do not feature heavy cross-talk.</li>
+</ul>
+</li>
+</ol>
+<hr />
+<h2>7. Final Reflection</h2>
+<h3>What Surprised Us in the Data</h3>
+<p>We were surprised by how exceptionally stable Nova-3's <strong>Speaker Confusion (SC)</strong> remained (consistently below 8%) even on the sessions where overall DER exceeded 75%. Nova-3’s speaker embedding and clustering mechanism is remarkably robust; its benchmark vulnerability stems entirely from acoustic speech dropout.</p>
+<h3>What We Would Investigate with One More Week</h3>
+<ol>
+<li><strong>API Endpoint Parameter Matrix:</strong> Systematically re-run the 15 sessions across Deepgram's <code>utterances=true</code>, <code>vad_turnoff</code>, and <code>language=multi</code> parameters to measure whether tuning internal endpoint thresholds can recover lost speech time.</li>
+<li><strong>Multi-Model Frame-Level Alignment:</strong> Run frame-level cross-correlation between pyannote.audio’s raw VAD activations and Deepgram’s word boundaries to calculate the exact millisecond distribution of missed onset/offset audio.</li>
+</ol>
+
+</body>
+</html>
